@@ -28,6 +28,12 @@ on:
         description: Enable NDK
         required: false
         default: "false"
+  push:
+    branches:
+      - main
+    paths:
+      - "input/**.zip"
+      - ".github/workflows/build-android.yml"
 
 permissions:
   contents: read
@@ -49,35 +55,67 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Get Ghost Tap ZIP
+        id: getzip
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ inputs.zip_source }}
           TAG: ${{ inputs.release_tag }}
           ZIP_URL: ${{ inputs.zip_url }}
         run: |
-          set -euxo pipefail
+          set -uo pipefail
 
           mkdir -p /tmp/ghosttap
+          GOT=""
 
-          if [ "$SOURCE" = "release-asset" ]; then
-            gh release download "$TAG" \
+          # 1) Try release asset when a tag was actually provided
+          if [ "$SOURCE" = "release-asset" ] && [ -n "$TAG" ]; then
+            echo "Trying release asset from tag: $TAG"
+            if gh release download "$TAG" \
               --repo "${{ github.repository }}" \
               --pattern "*.zip" \
-              --dir /tmp/ghosttap
-          elif [ "$SOURCE" = "download-url" ]; then
-            curl -fL "$ZIP_URL" -o /tmp/ghosttap/project.zip
-          else
-            cp input/*.zip /tmp/ghosttap/
+              --dir /tmp/ghosttap 2>/tmp/ghosttap/release-err.log; then
+              GOT="release"
+            else
+              echo "Release download failed, will fall back to input/:"
+              cat /tmp/ghosttap/release-err.log || true
+            fi
           fi
 
-          ZIP="$(find /tmp/ghosttap -maxdepth 1 -name '*.zip' | head -1)"
+          # 2) Try direct URL when one was provided
+          if [ -z "$GOT" ] && [ "$SOURCE" = "download-url" ] && [ -n "$ZIP_URL" ]; then
+            echo "Trying download URL"
+            if curl -fL "$ZIP_URL" -o /tmp/ghosttap/project.zip; then
+              GOT="url"
+            else
+              echo "URL download failed, will fall back to input/"
+            fi
+          fi
 
-          if [ -z "$ZIP" ]; then
-            echo "No ZIP found"
+          # 3) Fall back to the newest ZIP in input/ (covers manual runs
+          #    and web-UI uploads, which land in input/)
+          if [ -z "$GOT" ]; then
+            NEWEST="$(ls -t input/*.zip 2>/dev/null | head -1 || true)"
+            if [ -n "$NEWEST" ]; then
+              echo "Falling back to newest input ZIP: $NEWEST"
+              cp "$NEWEST" /tmp/ghosttap/
+              GOT="input"
+            fi
+          fi
+
+          if [ -z "$GOT" ]; then
+            echo "::error::No ZIP found. Provide a release tag, a download URL, or put a ZIP in input/."
             exit 1
           fi
 
+          ZIP="$(ls -t /tmp/ghosttap/*.zip | head -1)"
+          echo "Using ZIP: $ZIP"
+          echo "zip_path=$ZIP" >> "$GITHUB_OUTPUT"
+
+          rm -rf /tmp/project
           mkdir -p /tmp/project
           unzip -q "$ZIP" -d /tmp/project
 
@@ -86,8 +124,8 @@ jobs:
             -printf '%h\n' | head -1)"
 
           if [ -z "$ROOT" ]; then
-            echo "Android project root not found"
-            find /tmp/project -maxdepth 3 -type f
+            echo "::error::No Android project found in ZIP (no settings.gradle[.kts]). Files at top level:"
+            find /tmp/project -maxdepth 2 | head -20
             exit 1
           fi
 
@@ -98,17 +136,20 @@ jobs:
         run: |
           set -euxo pipefail
 
-          wget -q \
-            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
-            -O /tmp/gradle.zip
-
-          unzip -q /tmp/gradle.zip -d /opt
+          if [ ! -x /opt/gradle-8.7/bin/gradle ]; then
+            wget -q \
+              https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+              -O /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /opt
+          fi
           echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
 
       - name: Configure Android project
         run: |
           set -euxo pipefail
           cd "$PROJECT_ROOT"
+
+          : "${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
 
           printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > local.properties
 
@@ -123,15 +164,35 @@ jobs:
           ./gradlew --version
 
       - name: Build Ghost Tap
+        id: build
         run: |
-          set -euxo pipefail
+          set -uo pipefail
           cd "$PROJECT_ROOT"
 
           ./gradlew :app:assembleDebug \
             --stacktrace \
-            --no-daemon
+            --no-daemon 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          # pipefail makes the step fail if gradle failed
+
+      - name: Surface build errors
+        if: failure() && steps.build.conclusion == 'failure'
+        run: |
+          echo "=== Tail of Gradle log ==="
+          tail -60 "$GITHUB_WORKSPACE/build.log" || echo "(no build log)"
+          echo "=== End tail ==="
+          # Publish the failing lines as a public annotation so the error
+          # is visible on the run page without downloading logs.
+          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
+            TAIL="$(grep -E "What went wrong|error:|FAILED|Execution failed" -A 6 "$GITHUB_WORKSPACE/build.log" | tail -40 | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%%0A", $0}')"
+            if [ -n "$TAIL" ]; then
+              echo "::error::Gradle build failed:%0A${TAIL}"
+            else
+              echo "::error::Gradle build failed. See the 'Surface build errors' step log for the tail."
+            fi
+          fi
 
       - name: Find APK
+        if: success()
         run: |
           set -euxo pipefail
 
@@ -140,8 +201,8 @@ jobs:
             | head -1)"
 
           if [ -z "$APK" ]; then
-            echo "BUILD COMPLETED BUT APK WAS NOT FOUND"
-            find "$PROJECT_ROOT" -type f -name '*.apk'
+            echo "::error::BUILD COMPLETED BUT APK WAS NOT FOUND"
+            find "$PROJECT_ROOT" -type f -name '*.apk' || true
             exit 1
           fi
 
@@ -155,6 +216,7 @@ jobs:
             "$GITHUB_WORKSPACE/apk-output/GHOST-TAP-debug.apk"
 
       - name: Upload Ghost Tap APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: GHOST-TAP-APK
