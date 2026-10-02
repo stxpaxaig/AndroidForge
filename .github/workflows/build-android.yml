@@ -56,7 +56,21 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -euxo pipefail
+          : "${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMGR" ]; then
+            SDKMGR="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          fi
+          echo "Using sdkmanager: $SDKMGR"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          for pkg in "platform-tools" "platforms;android-34" "build-tools;34.0.0"; do
+            echo "Ensuring $pkg..."
+            yes | "$SDKMGR" "$pkg" >/tmp/sdkmanager.log 2>&1 || tail -5 /tmp/sdkmanager.log
+          done
+          echo "SDK packages ready:"
+          ls "$ANDROID_SDK_ROOT/platforms" "$ANDROID_SDK_ROOT/build-tools"
 
       - name: Get Ghost Tap ZIP
         id: getzip
