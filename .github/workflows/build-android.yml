@@ -49,9 +49,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Get Ghost Tap ZIP
         env:
           GH_TOKEN: ${{ github.token }}
@@ -100,8 +97,11 @@ jobs:
       - name: Install Gradle 8.7
         run: |
           set -euxo pipefail
-          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+
+          wget -q \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
             -O /tmp/gradle.zip
+
           unzip -q /tmp/gradle.zip -d /opt
           echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
 
@@ -114,7 +114,9 @@ jobs:
 
           mkdir -p gradle/wrapper
 
-          gradle wrapper --gradle-version 8.7 --distribution-type bin
+          gradle wrapper \
+            --gradle-version 8.7 \
+            --distribution-type bin
 
           chmod +x gradlew
 
@@ -144,10 +146,13 @@ jobs:
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
-          cp "$APK" "$GITHUB_WORKSPACE/apk-output/GHOST-TAP-debug.apk"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/apk-output/GHOST-TAP-debug.apk"
 
           echo "APK FOUND:"
-          ls -lh "$GITHUB_WORKSPACE/apk-output/GHOST-TAP-debug.apk"
+          ls -lh \
+            "$GITHUB_WORKSPACE/apk-output/GHOST-TAP-debug.apk"
 
       - name: Upload Ghost Tap APK
         uses: actions/upload-artifact@v4
