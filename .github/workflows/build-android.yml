@@ -146,7 +146,7 @@ jobs:
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "Project root: $ROOT"
 
-      -       - name: Apply source compatibility fixes
+      - name: Apply source compatibility fixes
         run: |
           set -euxo pipefail
           # Compose Material3 1.2.1+ no longer ships the Theme.Material3.* view
