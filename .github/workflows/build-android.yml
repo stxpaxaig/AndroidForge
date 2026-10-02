@@ -146,6 +146,17 @@ jobs:
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "Project root: $ROOT"
 
+      - name: Apply source compatibility fixes
+        run: |
+          set -euxo pipefail
+          # Some generated projects reference Theme.Material3.Dark.NoActionBar,
+          # which does not exist (Material3 has no NoActionBar variants).
+          # Fall back to Theme.Material3.Dark — Compose apps have no ActionBar anyway.
+          find "$PROJECT_ROOT" -name "themes.xml" -path "*res/values*" \
+            -exec sed -i 's/Theme\.Material3\.Dark\.NoActionBar/Theme.Material3.Dark/g' {} +
+          echo "themes.xml parent themes now:"
+          grep -h "style name=" "$PROJECT_ROOT"/app/src/main/res/values/themes.xml || true
+
       - name: Install Gradle 8.7
         run: |
           set -euxo pipefail
