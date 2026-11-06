@@ -141,4 +141,31 @@ class OperationRegistryTest {
         assertTrue(result.ok)
         assertEquals("test evidence", result.data)
     }
+
+    @Test
+    fun vnicOperationBridgePassesExactTargetChoiceWithoutMutatingUiContext() = runBlocking {
+        val sharedContext = OperationContext()
+        var receivedChoice = ""
+        val op = Operation(
+            id = "test.pkg0.target-choice",
+            title = "Use selected device",
+            description = "Test target propagation through the VNIC bridge.",
+            area = OperationArea.BLE,
+            preparation = listOf(
+                PreparationStep("Resolve the selected device") { context ->
+                    receivedChoice = context.pendingChoice.orEmpty()
+                    PreparationOutcome.Ready
+                }
+            ),
+            execute = { OpResult(true, "selected", "device=$receivedChoice") }
+        )
+        val cap = op.asCapability(sharedContext)
+
+        assertEquals(listOf("targetId", "choice"), cap.inputs)
+        val result = cap.run(mapOf("targetId" to "AA:BB:CC:DD"))
+
+        assertTrue(result.ok)
+        assertEquals("AA:BB:CC:DD", receivedChoice)
+        assertNull("the shared UI context must remain untouched", sharedContext.pendingChoice)
+    }
 }
