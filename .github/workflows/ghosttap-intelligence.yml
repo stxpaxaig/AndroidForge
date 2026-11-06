@@ -58,6 +58,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f ghosttap-source
           git commit -m "Snapshot fixed3 Ghost Tap source with intelligence repair" || true
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase "origin/${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Locate source
