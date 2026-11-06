@@ -1,0 +1,13 @@
+{
+  "id": "8b96fcc4-5b98-4b4a-b305-e2d83c083538",
+  "name": "Ghost Tap Interactive Android App",
+  "path": "Ghost Tap Interactive Android App",
+  "board": "arduino",
+  "boardId": "arduino-uno",
+  "boardFqbn": "arduino:avr:uno",
+  "createdAt": 1790872327705,
+  "updatedAt": 1790895928161,
+  "schemaVersion": 1,
+  "exportedAt": "2026-10-01T23:07:22.855Z",
+  "exportedBy": "tinkered-app/1.0"
+}

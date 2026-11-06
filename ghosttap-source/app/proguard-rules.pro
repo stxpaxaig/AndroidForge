@@ -1,0 +1,1 @@
+# GHOST TAP ProGuard rules

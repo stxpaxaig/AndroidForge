@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Silicon Labs CP210x -->
+    <usb-device vendor-id="4292" product-id="60000" /> <!-- 0x10C4:0xEA60 CP2102 -->
+    <usb-device vendor-id="4292" product-id="60001" /> <!-- 0x10C4:0xEA61 CP2102N -->
+    <usb-device vendor-id="4292" product-id="60003" /> <!-- 0x10C4:0xEA63 CP2103 -->
+    <usb-device vendor-id="4292" product-id="60016" /> <!-- 0x10C4:0xEA70 CP2105 -->
+    <!-- WCH CH340 / CH341 (vendor/product IDs exactly as Ch340Driver declares them) -->
+    <usb-device vendor-id="6790" product-id="29987" /> <!-- 0x1A86:0x7523 CH340 -->
+    <usb-device vendor-id="6790" product-id="21795" /> <!-- 0x1A86:0x5523 CH341 -->
+    <!-- Future: FTDI (0x0403:0x6001) -->
+</resources>
