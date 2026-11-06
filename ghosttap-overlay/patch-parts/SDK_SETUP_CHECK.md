@@ -1,0 +1,1 @@
+Trigger CI after replacing the obsolete Android SDK setup action.
