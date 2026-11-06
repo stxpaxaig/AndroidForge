@@ -100,8 +100,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          find "$PROJECT_ROOT" -name "themes.xml" -path "*res/values*" \\
-            -exec sed -i 's/parent="Theme\\.Material3[^"]*"/parent="android:Theme.Material.NoActionBar"/g' {} +
+          find "$PROJECT_ROOT" -name "themes.xml" -path "*res/values*" -exec sed -i 's/parent="Theme.Material3[^"]*"/parent="android:Theme.Material.NoActionBar"/g' {} +
           grep -R "style name=" "$PROJECT_ROOT"/app/src/main/res/values/themes.xml || true
 
       - name: Run JVM unit tests
