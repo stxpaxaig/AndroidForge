@@ -96,6 +96,14 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+      - name: Apply Compose host theme compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$PROJECT_ROOT" -name "themes.xml" -path "*res/values*" \\
+            -exec sed -i 's/parent="Theme\\.Material3[^"]*"/parent="android:Theme.Material.NoActionBar"/g' {} +
+          grep -R "style name=" "$PROJECT_ROOT"/app/src/main/res/values/themes.xml || true
+
       - name: Run JVM unit tests
         id: tests
         working-directory: ghosttap-source
