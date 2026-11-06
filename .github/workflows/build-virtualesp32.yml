@@ -1,0 +1,150 @@
+name: Build VirtualESP32 APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_zip:
+        description: Repository-relative path to the authoritative VirtualESP32 source ZIP
+        required: true
+        default: input/virtualesp32-merged-bridge9-repaired.zip
+        type: string
+  push:
+    branches:
+      - muse/virtualesp32-chatgpt-handoff
+    paths:
+      - "input/virtualesp32-merged-bridge9-repaired.zip"
+      - ".github/workflows/build-virtualesp32.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify VirtualESP32
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout handoff branch
+        uses: actions/checkout@v4
+        with:
+          ref: muse/virtualesp32-chatgpt-handoff
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        run: |
+          set -euxo pipefail
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMGR" ]; then
+            SDKMGR="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          fi
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          for pkg in "platform-tools" "platforms;android-35" "build-tools;35.0.0"; do
+            yes | "$SDKMGR" "$pkg" >/tmp/sdkmanager.log 2>&1 || { cat /tmp/sdkmanager.log; exit 1; }
+          done
+
+      - name: Resolve and extract VirtualESP32 source
+        id: source
+        env:
+          INPUT_SOURCE_ZIP: ${{ inputs.source_zip }}
+        run: |
+          set -euxo pipefail
+          ZIP="${INPUT_SOURCE_ZIP:-input/virtualesp32-merged-bridge9-repaired.zip}"
+          test -f "$ZIP" || { echo "::error::Missing VirtualESP32 source ZIP: $ZIP"; exit 1; }
+          echo "Source ZIP: $ZIP"
+          sha256sum "$ZIP" | tee source-archive.sha256
+          mkdir -p "$RUNNER_TEMP/virtualesp32-src"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/virtualesp32-src"
+          ROOT="$(find "$RUNNER_TEMP/virtualesp32-src" -maxdepth 4 \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -1)"
+          test -n "$ROOT" || { echo "::error::No Gradle Android project found in source ZIP"; find "$RUNNER_TEMP/virtualesp32-src" -maxdepth 3 -type f | head -80; exit 1; }
+          test -f "$ROOT/app/build.gradle" -o -f "$ROOT/app/build.gradle.kts" || { echo "::error::Expected :app module missing under $ROOT"; exit 1; }
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "project_root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "### Source archive" >> "$GITHUB_STEP_SUMMARY"
+          cat source-archive.sha256 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Gradle 8.7
+        run: |
+          set -euxo pipefail
+          if [ ! -x /opt/gradle-8.7/bin/gradle ]; then
+            wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip -O "$RUNNER_TEMP/gradle.zip"
+            unzip -q "$RUNNER_TEMP/gradle.zip" -d /opt
+          fi
+          echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
+
+      - name: Configure project
+        run: |
+          set -euxo pipefail
+          cd "$PROJECT_ROOT"
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > local.properties
+          mkdir -p gradle/wrapper
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Run VirtualESP32 unit tests
+        run: |
+          set -euxo pipefail
+          cd "$PROJECT_ROOT"
+          ./gradlew :app:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Build VirtualESP32 debug APK
+        run: |
+          set -euxo pipefail
+          cd "$PROJECT_ROOT"
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK identity and contents
+        id: verify
+        run: |
+          set -euxo pipefail
+          APK="$(find "$PROJECT_ROOT" -type f -path '*/build/outputs/apk/debug/*.apk' | head -1)"
+          test -n "$APK" || { echo "::error::Build succeeded but no debug APK was found"; exit 1; }
+          AAPT="$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "package: name='dev.virtualesp32'"
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+          cp "$APK" "$GITHUB_WORKSPACE/apk-output/VIRTUALESP32-debug.apk"
+          OUT="$GITHUB_WORKSPACE/apk-output/VIRTUALESP32-debug.apk"
+          APK_SHA="$(sha256sum "$OUT" | awk '{print $1}')"
+          APK_SIZE="$(stat -c '%s' "$OUT")"
+          SO_SHA="$(unzip -p "$OUT" lib/arm64-v8a/libesp32_qemu_android.so | sha256sum | awk '{print $1}')"
+          unzip -Z1 "$OUT" | grep -q '^lib/arm64-v8a/libesp32_qemu_android.so$'
+          unzip -Z1 "$OUT" | grep -q '^assets/esp32-v3-rom.bin$'
+          unzip -Z1 "$OUT" | grep -q '^assets/esp32-v3-rom-app.bin$'
+          DEX_DIR="$RUNNER_TEMP/virtualesp32-dex"
+          mkdir -p "$DEX_DIR"
+          unzip -q "$OUT" 'classes*.dex' -d "$DEX_DIR"
+          cat "$DEX_DIR"/classes*.dex > "$RUNNER_TEMP/all-dex.bin"
+          for needle in "no content URI or legacy path supplied" "LOAD_FIRMWARE rejected:" "importAndInspect"; do
+            if ! strings "$RUNNER_TEMP/all-dex.bin" | grep -Fq "$needle"; then
+              echo "::error::Expected repaired IPC marker missing from APK dex: $needle"
+              exit 1
+            fi
+          done
+          {
+            echo "### VirtualESP32 APK verification"
+            echo "- Package: dev.virtualesp32"
+            echo "- APK size: $APK_SIZE bytes"
+            echo "- APK SHA-256: `$APK_SHA`"
+            echo "- ARM64 native library SHA-256: `$SO_SHA`"
+            echo "- Required ROM assets: present"
+            echo "- Repaired content-URI IPC markers: present"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "apk_sha=$APK_SHA" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$APK_SIZE" >> "$GITHUB_OUTPUT"
+          echo "native_sha=$SO_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload VirtualESP32 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VIRTUALESP32-APK
+          path: apk-output/VIRTUALESP32-debug.apk
+          if-no-files-found: error
+          retention-days: 30
