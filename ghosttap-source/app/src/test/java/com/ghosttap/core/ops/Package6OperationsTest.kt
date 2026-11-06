@@ -224,7 +224,7 @@ class Package6OperationsTest {
                 readOnly = true,
                 riskLevel = "READ",
                 sourceMethod = "test",
-                run = { OpResult(true, "test capability") }
+                run = { com.ghosttap.core.OpResult(true, "test capability") }
             )
         )
         val draft = buildExtensionDraft(
