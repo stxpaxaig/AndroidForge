@@ -44,7 +44,7 @@ jobs:
           fi
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
           for pkg in "platform-tools" "platforms;android-35" "build-tools;35.0.0"; do
-            yes | "$SDKMGR" "$pkg" >/tmp/sdkmanager.log 2>&1 || { cat /tmp/sdkmanager.log; exit 1; }
+            "$SDKMGR" "$pkg" </dev/null >/tmp/sdkmanager.log 2>&1 || { cat /tmp/sdkmanager.log; exit 1; }
           done
 
       - name: Resolve and extract VirtualESP32 source
