@@ -70,7 +70,9 @@ fun Operation.asCapability(context: OperationContext): IntelCapability =
         title = title,
         detail = description,
         category = area.capabilityCategory,
-        inputs = emptyList(),
+        // The VNIC may pass the exact target or an exact runtime choice.
+        // Each operation's existing preparation logic validates the selection.
+        inputs = listOf("targetId", "choice"),
         outputs = listOf("outcome: what actually happened, in plain words"),
         preconditions = prerequisites,
         readOnly = riskLevel == "READ",
@@ -78,9 +80,25 @@ fun Operation.asCapability(context: OperationContext): IntelCapability =
         effects = description,
         verified = verified,
         sourceMethod = if (route != null) "Manual: $route screen (operation $id)" else "Operation: $id",
-        run = { _ ->
+        run = { args ->
+            // Isolate VNIC selection from the shared UI OperationContext.
+            val actionContext = OperationContext(
+                ble = context.ble,
+                usb = context.usb,
+                net = context.net,
+                visual = context.visual,
+                intel = context.intel,
+                engine = context.engine,
+                vesp32 = context.vesp32,
+                navigate = context.navigate,
+                requestPermissions = context.requestPermissions,
+                selectFirmware = context.selectFirmware,
+                pickImage = context.pickImage
+            )
+            actionContext.pendingChoice = args["choice"]?.trim()?.takeIf { it.isNotBlank() }
+                ?: args["targetId"]?.trim()?.takeIf { it.isNotBlank() }
             try {
-                when (val result = OperationRunner(context).run(this)) {
+                when (val result = OperationRunner(actionContext).run(this)) {
                     is OperationResult.Done ->
                         OpResult(true, result.reason, result.evidence)
                     is OperationResult.Failed ->
@@ -88,7 +106,11 @@ fun Operation.asCapability(context: OperationContext): IntelCapability =
                     is OperationResult.NeedsUserAction ->
                         OpResult(false, result.prompt, result.evidence)
                     is OperationResult.NeedsUserChoice ->
-                        OpResult(false, result.reason, result.evidence)
+                        OpResult(
+                            false,
+                            "${result.reason} Available choices: ${result.choices.joinToString(", ")}",
+                            result.choices.joinToString("\n")
+                        )
                 }
             } catch (e: Exception) {
                 OpResult(false, "Operation '$id' failed: ${e.message ?: "unknown problem"}")
