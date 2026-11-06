@@ -13,7 +13,6 @@ on:
       - muse/virtualesp32-chatgpt-handoff
     paths:
       - "input/virtualesp32-merged-bridge9-repaired.zip"
-      - ".github/workflows/build-virtualesp32.yml"
 
 permissions:
   contents: read
