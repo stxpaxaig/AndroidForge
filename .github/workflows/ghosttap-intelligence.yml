@@ -1,0 +1,127 @@
+name: Ghost Tap Intelligence Build
+
+on:
+  push:
+    branches:
+      - chatgpt/ghosttap-intelligence
+    paths:
+      - ".github/workflows/ghosttap-intelligence.yml"
+      - "ghosttap-overlay/**"
+      - "ghosttap-source/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ghosttap-intelligence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-and-build:
+    name: Verify and build isolated Ghost Tap source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout isolated branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bootstrap fixed3 source and apply ChatGPT overlay
+        if: ${{ !hashFiles('ghosttap-source/settings.gradle.kts') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://muse.ai/files/1343851108811859/2059192371452830/0h9ojtkbwi8j5pjmqvik93dm/ghosttap-ai-command-center-fixed3.zip'
+          curl -fL --retry 3 --retry-delay 2 "$URL" -o /tmp/ghosttap-fixed3.zip
+          echo "61cd7ee0707a1bf9750f6333b45cd247ccaf7b870b0de4429358a21aa2b3fbc2  /tmp/ghosttap-fixed3.zip" | sha256sum -c -
+          mkdir -p /tmp/ghosttap-unpack
+          unzip -q /tmp/ghosttap-fixed3.zip -d /tmp/ghosttap-unpack
+          ROOT="$(find /tmp/ghosttap-unpack -maxdepth 4 -type f -name settings.gradle.kts -printf '%h\n' | head -1)"
+          test -n "$ROOT"
+          echo "Source root: $ROOT"
+
+          base64 -d ghosttap-overlay/ghosttap-intelligence.patch.gz.b64 > /tmp/ghosttap-intelligence.patch.gz
+          echo "21ef9ef160b7e2c379db6edee2bd8e9bcc8421f2935a7f761f3d2437be13f26d  /tmp/ghosttap-intelligence.patch.gz" | sha256sum -c -
+          gzip -dc /tmp/ghosttap-intelligence.patch.gz > /tmp/ghosttap-intelligence.patch
+          patch --batch --forward --dry-run -p1 -d "$ROOT" < /tmp/ghosttap-intelligence.patch
+          patch --batch --forward -p1 -d "$ROOT" < /tmp/ghosttap-intelligence.patch
+
+          mkdir -p ghosttap-source
+          cp -a "$ROOT"/. ghosttap-source/
+          test -f ghosttap-source/settings.gradle.kts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ghosttap-source
+          git commit -m "Snapshot fixed3 Ghost Tap source with intelligence repair" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Locate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ghosttap-source/settings.gradle.kts
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/ghosttap-source" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: ghosttap-source/**/*.gradle*
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Run JVM unit tests
+        id: tests
+        working-directory: ghosttap-source
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/ghosttap-unit-tests.log"
+
+      - name: Build debug APK
+        id: build
+        working-directory: ghosttap-source
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/ghosttap-build.log"
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)"
+          test -n "$APK"
+          cp "$APK" "$GITHUB_WORKSPACE/apk-output/GhostTap-Intelligence-debug.apk"
+          sha256sum "$GITHUB_WORKSPACE/apk-output/GhostTap-Intelligence-debug.apk" | tee "$GITHUB_WORKSPACE/apk-output/SHA256SUMS.txt"
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHOST-TAP-INTELLIGENCE-DEBUG
+          path: apk-output/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHOST-TAP-INTELLIGENCE-LOGS
+          path: |
+            ghosttap-unit-tests.log
+            ghosttap-build.log
+            ghosttap-source/app/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 14
