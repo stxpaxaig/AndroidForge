@@ -1,0 +1,1 @@
+Trigger CI to verify every committed intelligence patch segment before source modification.
