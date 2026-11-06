@@ -43,7 +43,9 @@ jobs:
           test -n "$ROOT"
           echo "Source root: $ROOT"
 
-          cat ghosttap-overlay/patch-parts/*.b64 | tr -d '\\r\\n' | base64 -d > /tmp/ghosttap-intelligence.patch.gz
+          for part in ghosttap-overlay/patch-parts/*.b64; do sha256sum "$part"; done
+          cat ghosttap-overlay/patch-parts/*.b64 | tr -d '\r\n' | base64 -d > /tmp/ghosttap-intelligence.patch.gz
+          sha256sum /tmp/ghosttap-intelligence.patch.gz
           echo "21ef9ef160b7e2c379db6edee2bd8e9bcc8421f2935a7f761f3d2437be13f26d  /tmp/ghosttap-intelligence.patch.gz" | sha256sum -c -
           gzip -dc /tmp/ghosttap-intelligence.patch.gz > /tmp/ghosttap-intelligence.patch
           patch --batch --forward --dry-run -p1 -d "$ROOT" < /tmp/ghosttap-intelligence.patch
