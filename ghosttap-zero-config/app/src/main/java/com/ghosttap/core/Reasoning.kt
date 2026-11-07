@@ -416,8 +416,10 @@ class RemoteLlmReasoner(
 
     override val name = "Remote AI (your service)"
     override val configured = trimmedApiKey.isNotBlank()
+    // Gap 5a: "set up" is the honest claim — configured is not connected.
+    // No call has succeeded yet at the point this line is read.
     override val statusLine: String
-        get() = if (configured) "Remote AI connected ($MODEL via your endpoint)"
+        get() = if (configured) "Remote AI set up ($MODEL via your endpoint)"
         else "Remote AI not configured — using local reasoning"
 
     private var remoteHyps: List<Hypothesis> = emptyList()
@@ -501,11 +503,9 @@ class RemoteLlmReasoner(
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
             if (code !in 200..299) {
-                lastFailureReason = if (code == 401 || code == 403) {
-                    AiFailureReason.KEY_REJECTED
-                } else {
-                    AiFailureReason.SERVER_REFUSED
-                }
+                // Gap 4: 429 (busy) and 5xx (their side) are distinct
+                // failures, not one lumped refusal.
+                lastFailureReason = httpFailureReason(code)
                 return ""
             }
             val resp = conn.inputStream.bufferedReader().readText()
@@ -513,7 +513,9 @@ class RemoteLlmReasoner(
                 JSONObject(resp).optJSONArray("choices")?.optJSONObject(0)
                     ?.optJSONObject("message")?.optString("content").orEmpty()
             } catch (_: Exception) {
-                ""
+                // Gap 4: an unreadable answer is not an empty answer.
+                lastFailureReason = AiFailureReason.UNREADABLE_ANSWER
+                return ""
             }
             if (content.isBlank()) {
                 lastFailureReason = AiFailureReason.EMPTY_ANSWER
@@ -532,11 +534,25 @@ class RemoteLlmReasoner(
     }
 
     /**
+     * HTTP status → failure reason, shared by every remote call on this
+     * path (postBackground / postDraft / postScriptDraft / postRefine).
+     * 429 and 5xx are distinct; anything else non-2xx stays a refusal.
+     */
+    private fun httpFailureReason(code: Int): AiFailureReason = when {
+        code == 401 || code == 403 -> AiFailureReason.KEY_REJECTED
+        code == 429 -> AiFailureReason.TOO_BUSY
+        code in 500..599 -> AiFailureReason.SERVER_ERROR
+        else -> AiFailureReason.SERVER_REFUSED
+    }
+
+    /**
      * Which plain-words failure a thrown exception is. From the REAL
      * exception type, never guessed: a timeout is a timeout, a DNS
      * or connect failure means the phone could not reach the
      * service at all, anything else that went wrong while reading
-     * the answer means the answer came back unusable.
+     * the answer means the answer came back unusable — never an
+     * empty answer (Gap 4: an unexpected exception used to be
+     * mislabelled EMPTY_ANSWER).
      */
     private fun classifyFailure(e: Exception): AiFailureReason = when (e) {
         is java.net.SocketTimeoutException -> AiFailureReason.TIMEOUT
@@ -544,7 +560,7 @@ class RemoteLlmReasoner(
         is java.net.ConnectException,
         is java.net.NoRouteToHostException -> AiFailureReason.NO_NETWORK
         is java.io.IOException -> AiFailureReason.NO_NETWORK
-        else -> AiFailureReason.EMPTY_ANSWER
+        else -> AiFailureReason.UNREADABLE_ANSWER
     }
 
     /**
@@ -560,12 +576,17 @@ class RemoteLlmReasoner(
         if (!configured) return fallback.draftCapabilityJson(gapDescription, available)
         return try {
             withContext(Dispatchers.IO) { postDraft(gapDescription, available) }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             ""
         }
     }
 
     private fun postDraft(gapDescription: String, available: List<IntelCapability>): String {
+        // Gap 4: every failure path below records WHY it failed in
+        // [lastFailureReason] before returning "" — a blank answer with
+        // no reason used to hide the cause. Success leaves it null.
+        lastFailureReason = null
         var conn: HttpURLConnection? = null
         return try {
             val toolsJson = JSONArray(available.map { c ->
@@ -613,7 +634,11 @@ class RemoteLlmReasoner(
                 setRequestProperty("Authorization", "Bearer $trimmedApiKey")
             }
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            if (conn.responseCode !in 200..299) return ""
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                lastFailureReason = httpFailureReason(code)
+                return ""
+            }
             val resp = conn.inputStream.bufferedReader().readText()
             val content = JSONObject(resp).optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
@@ -626,9 +651,14 @@ class RemoteLlmReasoner(
                     if (s >= 0 && e > s) t.substring(s, e + 1) else t
                 }
             // Normalize through the real parser — unparseable means no draft.
-            val def = DynamicCapabilityDef.fromJson(json) ?: return ""
+            val def = DynamicCapabilityDef.fromJson(json)
+            if (def == null) {
+                lastFailureReason = AiFailureReason.UNREADABLE_ANSWER
+                return ""
+            }
             DynamicCapabilityDef.toJson(def)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             ""
         } finally {
             try {
@@ -650,7 +680,8 @@ class RemoteLlmReasoner(
         if (!configured) return fallback.draftScriptJson(gapDescription, available)
         return try {
             withContext(Dispatchers.IO) { postScriptDraft(gapDescription, available) }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             ""
         }
     }
@@ -659,6 +690,9 @@ class RemoteLlmReasoner(
         gapDescription: String,
         available: List<IntelCapability>
     ): String {
+        // Gap 4: every failure path below records WHY it failed in
+        // [lastFailureReason] before returning "" — see postDraft.
+        lastFailureReason = null
         var conn: HttpURLConnection? = null
         return try {
             val toolsJson = JSONArray(available
@@ -708,22 +742,34 @@ class RemoteLlmReasoner(
                 setRequestProperty("Authorization", "Bearer $trimmedApiKey")
             }
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            if (conn.responseCode !in 200..299) return ""
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                lastFailureReason = httpFailureReason(code)
+                return ""
+            }
             val resp = conn.inputStream.bufferedReader().readText()
             val content = JSONObject(resp).optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
             val payload = try {
                 JSONObject(content)
             } catch (_: Exception) {
+                lastFailureReason = AiFailureReason.UNREADABLE_ANSWER
                 return ""
             }
             val title = payload.optString("title", "Scripted probe")
             val jsSource = payload.optString("jsSource", "")
-            if (jsSource.isBlank()) return ""
+            if (jsSource.isBlank()) {
+                lastFailureReason = AiFailureReason.EMPTY_ANSWER
+                return ""
+            }
             // Never hand the loop an invalid script — validate before returning.
-            if (ScriptRuntime.validate(jsSource).isNotEmpty()) return ""
+            if (ScriptRuntime.validate(jsSource).isNotEmpty()) {
+                lastFailureReason = AiFailureReason.UNREADABLE_ANSWER
+                return ""
+            }
             ScriptDraft.toJson(title, jsSource)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             ""
         } finally {
             try {
@@ -744,7 +790,8 @@ class RemoteLlmReasoner(
                 postRefine(target, steps, knowledge)
             }
             refined ?: fallback.refinePlan(target, steps, knowledge)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             fallback.refinePlan(target, steps, knowledge)
         }
     }
@@ -770,6 +817,9 @@ class RemoteLlmReasoner(
         steps: List<PlanStep>,
         knowledge: String
     ): List<PlanStep>? {
+        // Gap 4: every failure path below records WHY it failed in
+        // [lastFailureReason] before returning null — see postDraft.
+        lastFailureReason = null
         var conn: HttpURLConnection? = null
         return try {
             val systemPrompt = "You are Ghost Tap's reasoning engine. " +
@@ -833,10 +883,17 @@ class RemoteLlmReasoner(
                 setRequestProperty("Authorization", "Bearer $trimmedApiKey")
             }
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            if (conn.responseCode !in 200..299) return null
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                lastFailureReason = httpFailureReason(code)
+                return null
+            }
             val resp = conn.inputStream.bufferedReader().readText()
-            parseResponse(resp, steps)
-        } catch (_: Exception) {
+            val refined = parseResponse(resp, steps)
+            if (refined == null) lastFailureReason = AiFailureReason.UNREADABLE_ANSWER
+            refined
+        } catch (e: Exception) {
+            lastFailureReason = classifyFailure(e)
             null
         } finally {
             try {

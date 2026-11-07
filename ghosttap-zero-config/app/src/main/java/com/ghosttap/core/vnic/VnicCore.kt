@@ -82,6 +82,8 @@ data class VnicCycleResult(
     val neuralActivity: VnicActivationResult?,
     val interpretation: VnicInterpretation?,
     val learned: List<String>,
+    /** Next-step suggestions the reasoner derived from the execution result (Gap 1; empty when nothing ran or nothing followed). */
+    val resultEvaluation: List<String> = emptyList(),
     val durationMs: Long,
     /** Bring-up outcome when the cycle ran one (null when no bring-up was attempted). */
     val bringUp: VnicBringUpResult? = null,
@@ -541,6 +543,9 @@ class VnicCore(
         var reward = 0.5
         var bringUpResult: VnicBringUpResult? = null
         var controlsMapped: List<String> = emptyList()
+        /** Gap 1: what actually ran, for the result→reasoning return path (EVALUATE below). */
+        var executedId: String? = null
+        var executedOutcome: VnicExecutionOutcome? = null
 
         // DEVELOP — when a develop callback is attached, the plan is
         // actually developed + tested (the callback owns validation,
@@ -622,6 +627,8 @@ class VnicCore(
                 }
                 telemetry.recordExecution(executionState)
                 phases += "ACT: bring-up ${kind.name} -> $executionState — $executionEvidence"
+                executedId = "bring-up"
+                executedOutcome = VnicExecutionOutcome(executionState, executionEvidence, executionRaw)
             } else {
                 if (kind != null) {
                     phases += "ACT: bring-up path exists (${kind.name}) but no bring-up port is attached — executing plan steps only, no connection will be held"
@@ -636,6 +643,7 @@ class VnicCore(
                             VnicExecutionOutcome(VnicExecutionState.FAILED, "Executor threw: ${e.message ?: "unknown"}")
                         }
                         lastOutcome = outcome
+                        executedId = stepId
                         telemetry.recordExecution(outcome.state)
                         phases += "ACT: $stepId -> ${outcome.state} — ${outcome.evidence}"
                         if (outcome.state == VnicExecutionState.FAILED) break
@@ -654,9 +662,45 @@ class VnicCore(
                             else -> 0.5
                         }
                     }
+                    executedOutcome = lastOutcome
                 } else if (selected != null) {
                     phases += "SELECT: ${selected} (no executor attached — plan only, nothing executed)"
                 }
+            }
+        }
+
+        // EVALUATE — Gap 1 (result→reasoning return path): what just ran
+        // goes back through the reasoner — the same noteResult pattern the
+        // older InvestigationLoop uses — so the next useful step is chosen
+        // from what actually happened, not from the plan alone. The
+        // evaluation is recorded in the phases, in `learned`, in the
+        // cycle result, and as an episodic memory the next cycle can
+        // recall. The scalar reward / mesh feedback in LEARN below is
+        // untouched.
+        var resultEvaluation: List<String> = emptyList()
+        if (executedId != null && executedOutcome != null) {
+            val ranId = executedId!!
+            val ranOutcome = executedOutcome!!
+            resultEvaluation = try {
+                reasoner.noteResult(ranId, ranOutcome)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            if (resultEvaluation.isNotEmpty()) {
+                phases += "EVALUATE: result went back through the reasoner — next useful step: ${resultEvaluation.first().take(200)}"
+                learned += "Next step from result: ${resultEvaluation.first().take(200)}"
+                runCatching {
+                    memory.remember(
+                        VnicMemoryRecord(
+                            type = VnicMemoryClass.EPISODIC,
+                            content = "After $ranId (${ranOutcome.state}): ${resultEvaluation.joinToString("; ").take(300)}",
+                            context = "result-evaluation cycle=$cycles",
+                            confidence = 0.6
+                        )
+                    )
+                }
+            } else {
+                phases += "EVALUATE: result went back through the reasoner — no next step suggested"
             }
         }
 
@@ -706,6 +750,7 @@ class VnicCore(
             neuralActivity = neural,
             interpretation = parsed,
             learned = learned,
+            resultEvaluation = resultEvaluation,
             durationMs = durationMs,
             bringUp = bringUpResult,
             controlsMapped = controlsMapped

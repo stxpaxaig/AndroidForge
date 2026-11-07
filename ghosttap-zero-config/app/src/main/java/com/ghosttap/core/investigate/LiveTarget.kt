@@ -64,8 +64,14 @@ enum class AiFailureReason {
     KEY_REJECTED,
     /** The service answered with some other refusal. */
     SERVER_REFUSED,
+    /** The service answered 429 — too many requests right now. */
+    TOO_BUSY,
+    /** The service answered 5xx — a problem on its side. */
+    SERVER_ERROR,
     /** The service answered but said nothing usable. */
-    EMPTY_ANSWER
+    EMPTY_ANSWER,
+    /** The service answered, but the answer couldn't be read. */
+    UNREADABLE_ANSWER
 }
 
 /** Plain-words line for why the AI call failed. No codes, no jargon. */
@@ -78,8 +84,14 @@ fun AiFailureReason.plainWords(): String = when (this) {
         "OpenAI said the key isn't accepted — check the key under THINKING ENGINE"
     AiFailureReason.SERVER_REFUSED ->
         "the AI service said no — try again in a bit"
+    AiFailureReason.TOO_BUSY ->
+        "the AI service is busy right now — try again in a bit"
+    AiFailureReason.SERVER_ERROR ->
+        "the AI service had a problem on its side — try again later"
     AiFailureReason.EMPTY_ANSWER ->
         "the AI answered but said nothing useful"
+    AiFailureReason.UNREADABLE_ANSWER ->
+        "the AI's answer came back but couldn't be read — try again"
 }
 
 /**

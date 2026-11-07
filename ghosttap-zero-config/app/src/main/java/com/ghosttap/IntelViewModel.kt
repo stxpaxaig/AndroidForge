@@ -53,7 +53,11 @@ import com.ghosttap.core.ScriptTestReport
 import com.ghosttap.core.TestReport
 import com.ghosttap.core.buildExtensionDraft
 import com.ghosttap.core.esp32.VirtualEsp32Client
+import com.ghosttap.core.vnic.VnicAiDiagnostic
 import com.ghosttap.core.vnic.VnicCycleResult
+import com.ghosttap.core.vnic.VnicDiagReport
+import com.ghosttap.core.vnic.VnicDiagStage
+import com.ghosttap.core.vnic.VnicDiagStageResult
 import com.ghosttap.core.vnic.VnicEngine
 import com.ghosttap.core.vnic.VnicProcedure
 import com.ghosttap.data.IntelDb
@@ -1243,6 +1247,46 @@ class IntelViewModel(
         // VNIC with no app restart. (Forces the lazy engine to build on
         // SAVE/CLEAR, the same as attachVesp32 already does.)
         runCatching { vnicEngine.refreshReasonerFromSettings() }
+    }
+
+    /** Result of the last AI connection check, or null before the first run. */
+    var aiDiagnosticReport by mutableStateOf<VnicDiagReport?>(null)
+        private set
+
+    /** True while the AI connection check is running. */
+    var aiDiagnosticRunning by mutableStateOf(false)
+        private set
+
+    /**
+     * Run the AI connection check (Part 2 diagnostic): one probe request
+     * through the live VNIC remote reasoner plus a real reasoning call
+     * over the answer. Runs off the main thread; the report lands in
+     * [aiDiagnosticReport] for the Thinking Engine panel. Never runs
+     * device steps — the check only talks to the AI service.
+     */
+    fun runAiDiagnostic() {
+        if (aiDiagnosticRunning) return
+        viewModelScope.launch {
+            aiDiagnosticRunning = true
+            try {
+                val report = withContext(Dispatchers.IO) { VnicAiDiagnostic(vnicEngine).run() }
+                aiDiagnosticReport = report
+            } catch (_: Exception) {
+                // The diagnostic runner reports failures as stages; this
+                // only fires if the engine itself could not be reached.
+                aiDiagnosticReport = VnicDiagReport(
+                    stages = listOf(
+                        VnicDiagStageResult(
+                            VnicDiagStage.KEY_PRESENT, false,
+                            "The check couldn't start — try again."
+                        )
+                    ),
+                    durationMs = 0
+                )
+            } finally {
+                aiDiagnosticRunning = false
+            }
+        }
     }
 
     /** Runs the reflection-based capability scan over the real ViewModels. */

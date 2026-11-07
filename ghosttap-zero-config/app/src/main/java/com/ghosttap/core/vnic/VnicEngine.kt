@@ -65,7 +65,7 @@ class VnicEngine(
     private val engine: IntelEngine,
     researchConfig: VnicResearchConfig = VnicResearchConfig(),
     llmConfig: VnicLlmConfig = VnicLlmConfig()
-) {
+) : VnicAiDiagnosticPort {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bridge = VnicCapabilityBridge(engine)
     private val execution = VnicExecution(engine)
@@ -130,11 +130,42 @@ class VnicEngine(
      * name. The core, mesh, memory, learning and telemetry are
      * untouched — only the reasoner delegate changes.
      */
-    fun refreshReasonerFromSettings(): String {
+    override fun refreshReasonerFromSettings(): String {
         return runCatching {
             reasonerSwitch.delegate = resolveReasoner()
             reasonerSwitch.name
         }.getOrElse { reasonerSwitch.name }
+    }
+
+    /** Saved Thinking Engine settings as the VNIC sees them (key presence only — the key value never leaves this object). */
+    override fun savedLlmConfig(): VnicLlmConfig = runCatching {
+        app?.let { VnicLlmConfig.fromSaved(IntelSettings.getEndpoint(it), IntelSettings.getApiKey(it)) } ?: VnicLlmConfig()
+    }.getOrElse { VnicLlmConfig() }
+
+    /** The live reasoner delegate the core is currently using. */
+    override fun currentReasoner(): VnicReasoningProvider = reasonerSwitch.delegate
+
+    /** Endpoint + model + key-presence of the live remote reasoner, or null when the built-in helper is live. */
+    override fun remoteSummary(): VnicRemoteSummary? =
+        (reasonerSwitch.delegate as? RemoteLlmReasoner)?.remoteSummary
+
+    /** Whether the last hypotheses/plan call fell back to the built-in helper. */
+    override fun reasonerFellBackToLocal(): Boolean = reasonerSwitch.lastPlanFellBackToLocal
+
+    /** One probe request through the live remote reasoner, or null when the built-in helper is live. */
+    override fun probeConnection(): VnicProbeOutcome? =
+        (reasonerSwitch.delegate as? RemoteLlmReasoner)?.probeConnection()
+
+    /**
+     * One hypotheses call through the live reasoner delegate — the same
+     * object the VNIC core calls. Used by the AI connection check so the
+     * probe answer flows into real reasoning with no cycle, no research,
+     * no plan execution and no bring-up: tapping the check never scans,
+     * connects, or acts on a device.
+     */
+    override fun reasonerHypotheses(observation: String, knownFacts: List<String>): List<String> {
+        runCatching { refreshReasonerFromSettings() }
+        return reasonerSwitch.hypotheses(observation, knownFacts)
     }
 
     private val core = VnicCore(
@@ -414,7 +445,7 @@ class VnicEngine(
     fun reasonerName(): String = reasonerSwitch.name
 
     /** Plain-words reason the last online-helper call failed, or null when it worked / the built-in helper is in use. Never contains credentials. */
-    fun reasonerFailureReason(): String? = reasonerSwitch.lastFailureReason
+    override fun reasonerFailureReason(): String? = reasonerSwitch.lastFailureReason
 
     /**
      * Register a developed procedure as a runnable capability (E-23 /

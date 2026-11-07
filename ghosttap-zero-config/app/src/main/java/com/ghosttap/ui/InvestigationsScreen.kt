@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ghosttap.IntelViewModel
 import com.ghosttap.core.CapabilityRegistry
@@ -40,6 +41,7 @@ import com.ghosttap.core.investigate.bringUpTargetFor
 import com.ghosttap.core.investigate.liveTargetKey
 // FindingsReportCard lives in this same package (com.ghosttap.ui),
 // supplied with the shared framework — no import needed, never redeclared here.
+import com.ghosttap.core.vnic.VnicDiagStage
 import com.ghosttap.core.vnic.VnicStatusPanel
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
@@ -903,8 +905,9 @@ private fun AiSection(vm: IntelViewModel) {
             "Right now Ghost Tap thinks with the helper built into the app (it works offline, " +
                 "no internet needed). If you want, you can connect your own AI service below — " +
                 "paste just a key to use OpenAI, or add your own web address. Your key stays on " +
-                "this phone, and if the service ever fails, Ghost Tap quietly goes back to the " +
-                "built-in helper. The plan always shows which helper made it.",
+                "this phone, and if the service ever fails, Ghost Tap goes back to the built-in " +
+                "helper and says so in the plan — it never pretends the online helper answered. " +
+                "The plan always shows which helper made it.",
             color = Dim,
             fontFamily = FontFamily.Monospace,
             style = MaterialTheme.typography.bodySmall
@@ -930,6 +933,8 @@ private fun AiSection(vm: IntelViewModel) {
             value = apiKey,
             onValueChange = { apiKey = it },
             label = { Text("Your key (optional, stored on this phone only)") },
+            // The key is never shown on screen once typed.
+            visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(6.dp))
@@ -944,6 +949,46 @@ private fun AiSection(vm: IntelViewModel) {
                 endpoint = ""
                 apiKey = ""
                 vm.refreshReasonerName()
+            }
+        }
+        // Part 2 — AI connection check: one short check message to the AI
+        // service through the real VNIC path, reported step by step. It
+        // never runs a device check and never shows the key.
+        Spacer(modifier = Modifier.height(10.dp))
+        TerminalButton(
+            if (vm.aiDiagnosticRunning) "CHECKING…" else "CHECK THE AI CONNECTION",
+            onClick = { vm.runAiDiagnostic() },
+            enabled = !vm.aiDiagnosticRunning
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "This sends one short check message to your AI service and shows each step. " +
+                "It never runs a device check and never shows your key.",
+            color = Dim,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall
+        )
+        vm.aiDiagnosticReport?.let { report ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                report.overallLine,
+                color = Accent,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            VnicDiagStage.values().forEach { stage ->
+                val stageResult = report.stages.firstOrNull { it.stage == stage }
+                Text(
+                    when {
+                        stageResult == null -> "— ${stage.plainLabel}: not run"
+                        stageResult.passed -> "✓ ${stage.plainLabel}: ${stageResult.detail}"
+                        else -> "✗ ${stage.plainLabel}: ${stageResult.detail}"
+                    },
+                    color = if (stageResult?.passed == true) Accent else Dim,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }

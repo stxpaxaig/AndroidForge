@@ -40,8 +40,21 @@ interface VnicReasoningProvider {
      */
     val lastFailureReason: String? get() = null
 
-    /** True when the last planFor fell back to the built-in helper after the online helper failed. */
+    /**
+     * True when the last hypotheses or planFor call fell back to the
+     * built-in helper after the online helper failed.
+     */
     val lastPlanFellBackToLocal: Boolean get() = false
+
+    /**
+     * Result-ingest (Gap 1): after a capability runs, its outcome goes
+     * back through the reasoner so the next useful step is chosen from
+     * what actually happened, not from the plan alone — the same
+     * noteResult → refine pattern the older InvestigationLoop uses.
+     * Returns plain-words next-step suggestions (possibly empty). The
+     * default ignores the result, so existing providers keep working.
+     */
+    fun noteResult(capabilityId: String, outcome: VnicExecutionOutcome): List<String> = emptyList()
 }
 
 /**
@@ -125,6 +138,24 @@ class LocalRuleReasoner : VnicReasoningProvider {
             hayWords.any { it in expanded } || expanded.any { w -> hay.contains(w) }
         }.map { it.id }.take(5)
     }
+
+    /**
+     * Result-ingest (Gap 1): rule-based evaluation of what just ran —
+     * a step that worked means the next step can build on its result; a
+     * step that failed means the next step should try a different check,
+     * not the same one again.
+     */
+    override fun noteResult(capabilityId: String, outcome: VnicExecutionOutcome): List<String> = when (outcome.state) {
+        VnicExecutionState.VERIFIED, VnicExecutionState.CONTROLLABLE ->
+            listOf("$capabilityId worked — the device answered, so the next step can build on that result.")
+        VnicExecutionState.CONNECTED ->
+            listOf("$capabilityId connected — the next step can try reading from it.")
+        VnicExecutionState.ATTEMPTED ->
+            listOf("$capabilityId was tried but no answer came back — the next step should check the device is still there before trying again.")
+        VnicExecutionState.FAILED ->
+            listOf("$capabilityId did not work — the next step should try a different check, not the same one again.")
+        else -> emptyList()
+    }
 }
 
 data class VnicLlmConfig(
@@ -172,11 +203,25 @@ data class VnicLlmConfig(
 class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvider {
     override val name = "Online helper"
 
+    /**
+     * What the diagnostic is allowed to know about this reasoner: the
+     * endpoint it calls, the model it asks for, and whether a key is
+     * present. The key value itself is never exposed.
+     */
+    val remoteSummary: VnicRemoteSummary
+        get() = VnicRemoteSummary(config.effectiveEndpoint, config.model, config.configured)
+
+    /** True when a key is saved — the same key-only rule as [VnicLlmConfig.configured]. */
+    val configured: Boolean get() = config.configured
+
+    /** The endpoint this reasoner actually calls (the saved one, or OpenAI when blank). */
+    val effectiveEndpoint: String get() = config.effectiveEndpoint
+
     /** Plain-words reason the last remote call failed (null when it worked). Set by [complete]; never contains credentials. */
     override var lastFailureReason: String? = null
         private set
 
-    /** True when the last planFor fell back to the built-in helper after the online helper failed. */
+    /** True when the last hypotheses or planFor call fell back to the built-in helper after the online helper failed. */
     override var lastPlanFellBackToLocal: Boolean = false
         private set
 
@@ -193,6 +238,11 @@ class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvid
     private val localFallback = LocalRuleReasoner()
 
     override fun hypotheses(observation: String, knownFacts: List<String>): List<String> {
+        // Gap 5b: a failed hypotheses call sets the fallback flag too, so a
+        // caller reading it after this call sees the fallback honestly.
+        // planFor resets the flag at its own start, so a later plan in the
+        // same cycle is unaffected by this.
+        lastPlanFellBackToLocal = false
         val prompt = buildString {
             append("You are helping identify an unknown device or subject observed by an Android app called Ghost Tap. ")
             append("Observation: ").append(observation).append("\n")
@@ -201,9 +251,33 @@ class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvid
             append("Never guess a device identity with confidence; say UNKNOWN when unsure.")
         }
         val text = complete(prompt)
-            ?: return listOf("The online brain didn't answer — using the built-in helper instead.") +
+        if (text == null) {
+            lastPlanFellBackToLocal = true
+            return listOf("The online brain didn't answer — using the built-in helper instead.") +
                 localFallback.hypotheses(observation, knownFacts)
+        }
         return text.lines().map { it.trim() }.filter { it.isNotBlank() }.take(3)
+    }
+
+    /**
+     * Result-ingest (Gap 1): the execution result goes back through the
+     * model for evaluation — same [complete] call as hypotheses/plans,
+     * same failure handling. On a failed remote call the built-in
+     * helper's evaluation is used and labelled, exactly like the
+     * hypotheses fallback.
+     */
+    override fun noteResult(capabilityId: String, outcome: VnicExecutionOutcome): List<String> {
+        val prompt = buildString {
+            append("You are helping an Android app called Ghost Tap decide what to do next after a check just ran. ")
+            append("Capability: ").append(capabilityId).append("\n")
+            append("Outcome: ").append(outcome.state.name).append(" — ").append(outcome.evidence.take(300)).append("\n")
+            append("Reply with 1-2 short next steps in plain words, one per line — what useful check to try next, given what just happened. ")
+            append("Describe the check in plain words, never invent a capability id. If nothing useful follows, reply with nothing.")
+        }
+        val text = complete(prompt)
+            ?: return listOf("The online brain didn't answer — using the built-in helper instead.") +
+                localFallback.noteResult(capabilityId, outcome)
+        return text.lines().map { it.trim() }.filter { it.isNotBlank() }.take(2)
     }
 
     override fun planFor(goal: String, capabilityIds: List<String>): List<String> =
@@ -271,15 +345,111 @@ class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvid
      * explicitly. The key is sent only in the Authorization header and
      * never appears in any reason, log, or exception.
      */
+    /**
+     * One chat-completions call. Accepts any successful HTTP 2xx response,
+     * not just 200. Every failure records a plain-words reason in
+     * [lastFailureReason] (classified from the real status / exception,
+     * never guessed) and returns null — the caller then falls back
+     * explicitly. The key is sent only in the Authorization header and
+     * never appears in any reason, log, or exception.
+     */
     private fun complete(prompt: String): String? {
         lastFailureReason = null
         if (!config.configured) {
             lastFailureReason = "Online helper not configured — no key saved in the Thinking Engine box."
             return null
         }
+        val payload = "{\"model\":${esc(config.model)},\"messages\":[{\"role\":\"user\",\"content\":${esc(prompt)}}],\"temperature\":0.2,\"max_tokens\":400}"
+        return when (val exchange = postChat(payload)) {
+            is VnicChatExchange.Failed -> {
+                lastFailureReason = exchange.reason
+                null
+            }
+            is VnicChatExchange.Responded -> {
+                if (exchange.code !in 200..299) {
+                    lastFailureReason = httpFailureReason(exchange.code)
+                    null
+                } else when (val parsed = parseChatContentDetailed(exchange.body)) {
+                    is VnicChatContent.Text -> parsed.text
+                    VnicChatContent.Empty -> {
+                        lastFailureReason = "Online helper answered but said nothing."
+                        null
+                    }
+                    VnicChatContent.Malformed -> {
+                        lastFailureReason = "Online helper answered, but the answer was in a shape Ghost Tap couldn't read."
+                        null
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The AI connection check probe (Part 2 diagnostic): sends exactly
+     * [vnicDiagProbePayload] — the configured model, one user message
+     * asking for the exact words GHOST_TAP_AI_CONNECTED, temperature 0 —
+     * through the same [postChat] transport the real reasoning uses, and
+     * reports the outcome stage by stage. No local fallback: a failure
+     * is reported, never papered over with a built-in answer.
+     */
+    fun probeConnection(): VnicProbeOutcome {
+        lastFailureReason = null
+        if (!config.configured) {
+            lastFailureReason = "Online helper not configured — no key saved in the Thinking Engine box."
+            return VnicProbeOutcome(
+                requestSent = false, httpCode = null, httpSuccess = false,
+                parsedContent = null, malformed = false, failureReason = lastFailureReason
+            )
+        }
+        return when (val exchange = postChat(vnicDiagProbePayload(config.model))) {
+            is VnicChatExchange.Failed -> {
+                lastFailureReason = exchange.reason
+                VnicProbeOutcome(exchange.requestSent, null, false, null, false, exchange.reason)
+            }
+            is VnicChatExchange.Responded -> {
+                if (exchange.code !in 200..299) {
+                    val reason = httpFailureReason(exchange.code)
+                    lastFailureReason = reason
+                    VnicProbeOutcome(true, exchange.code, false, null, false, reason)
+                } else when (val parsed = parseChatContentDetailed(exchange.body)) {
+                    is VnicChatContent.Text -> VnicProbeOutcome(true, exchange.code, true, parsed.text, false, null)
+                    VnicChatContent.Empty -> {
+                        val reason = "Online helper answered but said nothing."
+                        lastFailureReason = reason
+                        VnicProbeOutcome(true, exchange.code, true, "", false, reason)
+                    }
+                    VnicChatContent.Malformed -> {
+                        val reason = "Online helper answered, but the answer was in a shape Ghost Tap couldn't read."
+                        lastFailureReason = reason
+                        VnicProbeOutcome(true, exchange.code, true, null, true, reason)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * One raw chat-completions HTTP exchange, shared by [complete] and
+     * [probeConnection] so the check and the real reasoning use the same
+     * transport, the same endpoint, the same key, and the same failure
+     * classification. [VnicChatExchange.Failed.requestSent] is true once
+     * the request bytes were written — a DNS/connect failure means the
+     * request never went out; a failure after the write means it did.
+     * The key is sent only in the Authorization header, never in any
+     * reason string.
+     */
+    private fun postChat(payloadJson: String): VnicChatExchange {
+        if (!config.configured) {
+            return VnicChatExchange.Failed(
+                requestSent = false,
+                reason = "Online helper not configured — no key saved in the Thinking Engine box."
+            )
+        }
         val key = config.apiKey!!.trim()
+        var conn: HttpURLConnection? = null
+        var requestSent = false
         return try {
-            val conn = (URL(config.effectiveEndpoint).openConnection() as HttpURLConnection).apply {
+            conn = (URL(config.effectiveEndpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Authorization", "Bearer $key")
                 setRequestProperty("Content-Type", "application/json")
@@ -288,41 +458,39 @@ class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvid
                 readTimeout = config.readTimeoutMs
                 doOutput = true
             }
-            val payload = "{\"model\":${esc(config.model)},\"messages\":[{\"role\":\"user\",\"content\":${esc(prompt)}}],\"temperature\":0.2,\"max_tokens\":400}"
-            try {
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                val code = conn.responseCode
-                if (code !in 200..299) {
-                    lastFailureReason = when {
-                        code == 401 || code == 403 -> "Online helper refused the saved key (HTTP $code) — check the key in the Thinking Engine box."
-                        code == 429 -> "Online helper is busy (HTTP 429) — try again shortly."
-                        code in 400..499 -> "Online helper refused the request (HTTP $code)."
-                        code in 500..599 -> "Online helper had a problem (HTTP $code) — try again later."
-                        else -> "Online helper answered HTTP $code."
-                    }
-                    return null
-                }
+            conn.outputStream.use { it.write(payloadJson.toByteArray(Charsets.UTF_8)) }
+            requestSent = true
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                VnicChatExchange.Responded(code, "")
+            } else {
                 val body = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
-                val content = parseChatContent(body)
-                if (content.isNullOrBlank()) {
-                    lastFailureReason = "Online helper answered but with no usable text."
-                    return null
-                }
-                content
-            } finally {
-                conn.disconnect()
+                VnicChatExchange.Responded(code, body)
             }
         } catch (e: Exception) {
-            lastFailureReason = when (e) {
-                is java.net.SocketTimeoutException -> "Online helper timed out — check the connection and try again."
-                is java.net.UnknownHostException,
-                is java.net.ConnectException,
-                is java.net.NoRouteToHostException -> "Could not reach the online helper — check the connection."
-                is java.io.IOException -> "Could not reach the online helper — check the connection."
-                else -> "Online helper answer could not be read."
-            }
-            null
+            VnicChatExchange.Failed(requestSent, classifyExchangeFailure(e))
+        } finally {
+            runCatching { conn?.disconnect() }
         }
+    }
+
+    /** Plain-words reason for a non-2xx HTTP status, from the real status — never guessed. */
+    private fun httpFailureReason(code: Int): String = when {
+        code == 401 || code == 403 -> "Online helper refused the saved key (HTTP $code) — check the key in the Thinking Engine box."
+        code == 429 -> "Online helper is busy (HTTP 429) — try again shortly."
+        code in 400..499 -> "Online helper refused the request (HTTP $code)."
+        code in 500..599 -> "Online helper had a problem (HTTP $code) — try again later."
+        else -> "Online helper answered HTTP $code."
+    }
+
+    /** Plain-words reason for a transport failure, from the real exception type — never guessed. */
+    private fun classifyExchangeFailure(e: Exception): String = when (e) {
+        is java.net.SocketTimeoutException -> "Online helper timed out — check the connection and try again."
+        is java.net.UnknownHostException,
+        is java.net.ConnectException,
+        is java.net.NoRouteToHostException -> "Could not reach the online helper — check the connection."
+        is java.io.IOException -> "Could not reach the online helper — check the connection."
+        else -> "Online helper answer could not be read."
     }
 
     /**
@@ -331,17 +499,46 @@ class RemoteLlmReasoner(private val config: VnicLlmConfig) : VnicReasoningProvid
      * "content" anywhere in the body, which is only coincidentally the
      * message content for a standard OpenAI reply. A null / non-string
      * content (e.g. a tool-call reply) returns null, not a wrong string.
+     *
+     * Gap 3 (7D): the detailed form distinguishes a MALFORMED body (bad
+     * JSON / missing choices / missing message / non-string content) from
+     * a valid-but-EMPTY answer — they used to share one reason.
      */
-    private fun parseChatContent(body: String): String? {
+    internal fun parseChatContentDetailed(body: String): VnicChatContent {
         val choicesIdx = body.indexOf("\"choices\"")
-        if (choicesIdx < 0) return null
+        if (choicesIdx < 0) return VnicChatContent.Malformed
         val messageIdx = body.indexOf("\"message\"", choicesIdx)
-        if (messageIdx < 0) return null
-        return VnicJson.stringField(body, "content", messageIdx)
+        if (messageIdx < 0) return VnicChatContent.Malformed
+        val content = VnicJson.stringField(body, "content", messageIdx) ?: return VnicChatContent.Malformed
+        return if (content.isBlank()) VnicChatContent.Empty else VnicChatContent.Text(content)
+    }
+
+    private fun parseChatContent(body: String): String? = when (val parsed = parseChatContentDetailed(body)) {
+        is VnicChatContent.Text -> parsed.text
+        VnicChatContent.Empty -> ""
+        VnicChatContent.Malformed -> null
     }
 
     private fun esc(s: String): String =
         "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
+}
+
+/** Outcome of one raw chat-completions HTTP exchange. Internal: callers map it to their own failure labels. */
+internal sealed class VnicChatExchange {
+    /** The request was written and an HTTP response arrived. `body` is the response body on 2xx, "" otherwise. */
+    data class Responded(val code: Int, val body: String) : VnicChatExchange()
+    /** The request could not be completed. `requestSent` is true once the request bytes were written. */
+    data class Failed(val requestSent: Boolean, val reason: String) : VnicChatExchange()
+}
+
+/**
+ * What a chat-completions body actually held: usable text, a valid-but-
+ * empty answer, or a shape that cannot be read as a chat completion.
+ */
+internal sealed class VnicChatContent {
+    data class Text(val text: String) : VnicChatContent()
+    object Empty : VnicChatContent()
+    object Malformed : VnicChatContent()
 }
 
 /**
@@ -372,4 +569,7 @@ class SwitchableReasoner(initial: VnicReasoningProvider) : VnicReasoningProvider
         knownFacts: List<String>,
         findings: List<VnicFinding>
     ): List<String> = delegate.planFor(goal, capabilities, knownFacts, findings)
+
+    override fun noteResult(capabilityId: String, outcome: VnicExecutionOutcome): List<String> =
+        delegate.noteResult(capabilityId, outcome)
 }
