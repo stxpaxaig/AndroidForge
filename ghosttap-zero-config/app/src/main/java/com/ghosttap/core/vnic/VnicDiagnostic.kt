@@ -248,7 +248,7 @@ class VnicAiDiagnostic(private val port: VnicAiDiagnosticPort) {
         val observation =
             "The online helper just answered the connection check. Its exact reply was: $VNIC_DIAG_EXPECTED_REPLY. What does that reply tell us?"
         val hypotheses = runCatching { port.reasonerHypotheses(observation) }.getOrElse { emptyList() }
-        val fellBack = runCatching { port.reasonerFellBackToLocal() }.getOrElse(false)
+        val fellBack = runCatching { port.reasonerFellBackToLocal() }.getOrElse { false }
         val failure = runCatching { port.reasonerFailureReason() }.getOrNull()
         val localAnswered = hypotheses.any { it.startsWith("The online brain didn't answer") }
         val mentionsCheckWords = hypotheses.any { it.contains(VNIC_DIAG_EXPECTED_REPLY) }
