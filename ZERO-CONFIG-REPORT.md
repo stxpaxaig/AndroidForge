@@ -156,12 +156,13 @@ The `IntentBox` answer line shows `intelVm.lastCommandAnswer`, which is shared a
 - Sync record: `~/workspace/ghosttap/zero-config-push.muse-github-snapshot-sync.json` (1 entry, 149 paths, commit `cae72f42aac5b842b0676ab407eb64d12b187e1d`).
 - **Push staging (kept):** `~/workspace/ghosttap/zero-config-push/` — `ghosttap-zero-config/` (full zero-config tree) + `ZERO-CONFIG-REPORT.md` at root. Excludes `gradle/wrapper/gradle-wrapper.jar` (binary — the snapshot-push procedure rejects binary content; the ZIP still contains the complete tree including the jar).
 - **Manifest:** `/tmp/zc-push-manifest` (NUL-delimited paths; ephemeral — regenerate from the staging dir if the VM restarts: `cd ~/workspace/ghosttap/zero-config-push && find . -type f | sed 's|^\./||' | sort` piped to NUL-join with a trailing NUL).
+- **Repair follow-up commit:** `7400551b813e0cd0c5d64ad8c8889a9ccd551680` (2026-11-07T02:49:18Z) — fixes the 3 compile errors from run 42329337124; full record in §16. Sync record updated (2 entries).
 
 ## 15. Status summary
 
 - Code: complete per the corrected directive (DISCOVER → SELECT → AUTO-CONNECT → COMMANDS in every function; global picker removed; intent box on every function screen + control page). Fix pass applied (manual-disconnect memory + stale-answer clear). Repair pass applied after the red build — see §16.
 - Tests: 16 written, 0 run. No compile. No on-device proof.
-- ZIP: ready and verified (§12, repackaged after the §16 repair). Hosted link: BLOCKED on approval (§13) — the only open delivery item. Branch: CREATED + PUSHED (§14); repair commit pending (§16).
+- ZIP: ready and verified (§12, repackaged after the §16 repair). Hosted link: BLOCKED on approval (§13) — the only open delivery item. Branch: CREATED + PUSHED (§14); repair commit pushed (§16).
 - The AndroidForge build (parent's step) waits on the hosted link. Main untouched.
 
 ## 16. Repair — AndroidForge run 42329337124 went RED (repair attempt 1 of 2)
@@ -173,4 +174,4 @@ The `IntentBox` answer line shows `intelVm.lastCommandAnswer`, which is shared a
 - **Sweeps (same error classes, whole tree):** (a) nullable-receiver member calls — the only unsafe `?.foo().bar(` chain in the tree was line 160; every other hit uses `.orEmpty()` or safe calls (`?.`). Clean. (b) trailing-lambda / missing-onClick sites — `UartButton` is the only helper with a Boolean last parameter and line 199 was its only trailing-lambda call; all other `UartButton` sites pass `onClick` positionally or by name. `TerminalButton` has two overloads; all trailing-lambda calls resolve to the 2-parameter overload (`onClick` last) and all `enabled = …` calls pass `onClick` by name. Clean. No further fixes needed.
 - **NOT verified:** no JDK exists here (no Java at all) — no compile or test run was possible, and none was attempted. The repair is hand-checked only. AndroidForge is the proof: the parent re-triggers the build from the new ZIP link.
 - **ZIP:** repackaged — SHA256 `a823ba885a99ccf0a75203577bbd637eb04f189be7e99d43a6aacdca7a650a53`, 605,522 bytes, 184 entries; unzipped tree byte-identical to the working tree (excluding `.gradle/`); fixed lines confirmed inside the ZIP (§12).
-- **Branch commit:** repair commit to `muse/ghosttap-zero-config` — pending (recorded here once pushed).
+- **Branch commit:** **`7400551b813e0cd0c5d64ad8c8889a9ccd551680`** — message "Ghost Tap zero-config: fix 3 compile errors from run 42329337124 (VnicReasoning 160, UsbUartScreen 199)", 2026-11-07T02:49:18Z, on top of `cae72f42`. Read back and verified via `list_commits` on the branch (head SHA + message match). Fixed lines confirmed on the branch itself: `VnicReasoning.kt:160` carries the `?.ifBlank` fix and `UsbUartScreen.kt:199` carries the `onClick = { … }` fix. Main head re-verified after the push: still `a2640c67046191584573d533f88ff08ffdcac216` — **main untouched**. URL: https://github.com/stxpaxaig/AndroidForge/commit/7400551b813e0cd0c5d64ad8c8889a9ccd551680
