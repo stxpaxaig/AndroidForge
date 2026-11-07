@@ -131,8 +131,8 @@ The `IntentBox` answer line shows `intelVm.lastCommandAnswer`, which is shared a
 ## 12. ZIP facts
 
 - Path: `~/workspace/your_files/ghosttap-zero-config.zip`
-- SHA256: `e9536c6991ebd3eaa0b8e840def07162340089285d3f3de6ff30885e6920a751`
-- Size: 605,512 bytes
+- SHA256: `a823ba885a99ccf0a75203577bbd637eb04f189be7e99d43a6aacdca7a650a53` (repackaged after the §16 repair; supersedes `e9536c6991ebd3eaa0b8e840def07162340089285d3f3de6ff30885e6920a751`)
+- Size: 605,522 bytes
 - Entries: 184 (149 files + directory entries, as reported by `unzip -l`)
 - Verified: unzipped cleanly to scratch (`/tmp/zc-verify`); all changed/added source files, `ZERO_CONFIG.md`, and `gradle/wrapper/gradle-wrapper.jar` present; unzipped tree byte-identical to the working tree (see exclusion note below).
 - **Exclusion note — `.gradle/`:** the ZIP contains the complete source tree EXCEPT `.gradle/` (271 MB, 269 files — the Gradle 8.7 distribution downloaded as a side effect of the failed `./gradlew` run that proved there is no JDK here). That is build scratch, not source: the VNIC-repair ZIP precedent likewise shipped a clean tree with no `.gradle/`. The tree itself was NOT modified — `.gradle/` is still on disk in the working tree; it was excluded from the ZIP only. (Note: `ZERO_CONFIG.md` states the `.gradle` directory "was removed afterwards" — it was not; it re-appeared at 00:54, presumably from the fix-pass verification attempt. The exclusion stands regardless.)
@@ -148,18 +148,29 @@ The `IntentBox` answer line shows `intelVm.lastCommandAnswer`, which is shared a
 
 ## 14. Branch + commit
 
-- Branch: `muse/ghosttap-zero-config` — **NOT created**. Commit hash: **none**.
-- Main head verified before any write: `a2640c67046191584573d533f88ff08ffdcac216` ("Update build-android.yml", 2026-10-02) — unchanged; **main untouched**. (Checked via `list_commits` on `main`, head commit.)
-- Branch creation attempt: **NOT ATTEMPTED — see retry state below.** (Update this section with the outcome once attempted.)
-- **Push staging (ready):** `~/workspace/ghosttap/zero-config-push/` — `ghosttap-zero-config/` (full zero-config tree) + `ZERO-CONFIG-REPORT.md` at root. Excludes `gradle/wrapper/gradle-wrapper.jar` (binary — the snapshot-push procedure rejects binary content; the ZIP still contains the complete tree including the jar).
-- **Manifest:** `/tmp/zc-push-manifest` (NUL-delimited paths; ephemeral — regenerate from the staging dir if the VM restarts).
-- **Retry once an approver is present:** create branch `muse/ghosttap-zero-config` from `main` (head `a2640c67046191584573d533f88ff08ffdcac216`), then:
-  `github push-files --owner stxpaxaig --repo AndroidForge --branch muse/ghosttap-zero-config --message "Ghost Tap zero-config autonomous build (verified, tests not run)" --source-dir ~/workspace/ghosttap/zero-config-push --paths-file /tmp/zc-push-manifest`
-  Then read back the branch head and record the SHA here. Do NOT push anything to `muse/virtualesp32-chatgpt-handoff` or `muse/ghosttap-vnic-repair`.
+- Branch: `muse/ghosttap-zero-config` — **CREATED** from `main` head `a2640c67046191584573d533f88ff08ffdcac216`.
+- Commit: **`cae72f42aac5b842b0676ab407eb64d12b187e1d`** — message "Ghost Tap zero-config autonomous build (verified, tests not run)", 2026-11-07T02:24:46Z. Read back and verified via `list_commits` on the branch (head SHA + message match). URL: https://github.com/stxpaxaig/AndroidForge/commit/cae72f42aac5b842b0676ab407eb64d12b187e1d
+- Main head re-verified after the push: still `a2640c67046191584573d533f88ff08ffdcac216` — **main untouched**. Nothing was pushed to `muse/virtualesp32-chatgpt-handoff` or `muse/ghosttap-vnic-repair`.
+- Branch creation: first attempt was interrupted by a service restart (read-back: branch still 404 — it had NOT applied); second attempt succeeded (approval granted). Push: first attempt failed only because the service restart had wiped `/tmp/zc-push-manifest` — manifest regenerated from the staging dir (149 paths, 10,638 bytes) and the push then succeeded on the next attempt.
+- Spot-check: `ZERO-CONFIG-REPORT.md` downloads from the branch (SHA 8163f9ac5c2c39d5d79b8a8750772a44c4ba5a5f).
+- Sync record: `~/workspace/ghosttap/zero-config-push.muse-github-snapshot-sync.json` (1 entry, 149 paths, commit `cae72f42aac5b842b0676ab407eb64d12b187e1d`).
+- **Push staging (kept):** `~/workspace/ghosttap/zero-config-push/` — `ghosttap-zero-config/` (full zero-config tree) + `ZERO-CONFIG-REPORT.md` at root. Excludes `gradle/wrapper/gradle-wrapper.jar` (binary — the snapshot-push procedure rejects binary content; the ZIP still contains the complete tree including the jar).
+- **Manifest:** `/tmp/zc-push-manifest` (NUL-delimited paths; ephemeral — regenerate from the staging dir if the VM restarts: `cd ~/workspace/ghosttap/zero-config-push && find . -type f | sed 's|^\./||' | sort` piped to NUL-join with a trailing NUL).
 
 ## 15. Status summary
 
-- Code: complete per the corrected directive (DISCOVER → SELECT → AUTO-CONNECT → COMMANDS in every function; global picker removed; intent box on every function screen + control page). Fix pass applied (manual-disconnect memory + stale-answer clear).
+- Code: complete per the corrected directive (DISCOVER → SELECT → AUTO-CONNECT → COMMANDS in every function; global picker removed; intent box on every function screen + control page). Fix pass applied (manual-disconnect memory + stale-answer clear). Repair pass applied after the red build — see §16.
 - Tests: 16 written, 0 run. No compile. No on-device proof.
-- ZIP: ready and verified (§12). Hosted link: BLOCKED on approval (§13). Branch: NOT created (§14).
-- The AndroidForge build (parent's step) waits on the hosted link. Nothing was pushed, nothing was built, main untouched.
+- ZIP: ready and verified (§12, repackaged after the §16 repair). Hosted link: BLOCKED on approval (§13) — the only open delivery item. Branch: CREATED + PUSHED (§14); repair commit pending (§16).
+- The AndroidForge build (parent's step) waits on the hosted link. Main untouched.
+
+## 16. Repair — AndroidForge run 42329337124 went RED (repair attempt 1 of 2)
+
+- Run: **42329337124** ("Build Android APK #152", job 128272001942, step "Build Ghost Tap", task `:app:compileDebugKotlin` FAILED). Exactly 3 `e:` lines in the full log, all repaired in one pass. No other errors.
+- **Error 1 — `core/vnic/VnicReasoning.kt:160:59`:** "Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type String?" — `effectiveEndpoint` called `.ifBlank` directly on `endpoint?.trim()` (a nullable `String?`). (Note: the log's warning text mentioned a deprecated nullable `ipV4` — no `ipV4` exists anywhere in this tree; the real culprit at 160:59 is the `.ifBlank` call on the nullable trim result.) **Fix:** `endpoint?.trim()?.ifBlank { DEFAULT_ENDPOINT } ?: DEFAULT_ENDPOINT` — one added `?`. Semantics unchanged: null → OpenAI default; blank → OpenAI default; non-blank → trimmed value.
+- **Errors 2 + 3 — `ui/UsbUartScreen.kt:199:32` and `:199:46`:** "No value passed for parameter 'onClick'" + "Type mismatch: inferred type is () -> Unit but Boolean was expected" — the DISCONNECT button passed its action as a trailing lambda to `UartButton(text, onClick, highlighted = false)`, so the lambda bound to the last parameter (`highlighted: Boolean`). **Fix:** the lambda is now passed as the named `onClick` argument: `UartButton("DISCONNECT", onClick = { … })`. Behavior unchanged — it still records the manual disconnect, then disconnects.
+- **Diff vs pre-repair tree: exactly 2 files, 3 lines** (VnicReasoning.kt:160, UsbUartScreen.kt:199 + closing `})`). Verified by diff against a pre-repair baseline copy. No function changes, no behavior changes beyond making the code compile as intended; nothing taken away, nothing altered.
+- **Sweeps (same error classes, whole tree):** (a) nullable-receiver member calls — the only unsafe `?.foo().bar(` chain in the tree was line 160; every other hit uses `.orEmpty()` or safe calls (`?.`). Clean. (b) trailing-lambda / missing-onClick sites — `UartButton` is the only helper with a Boolean last parameter and line 199 was its only trailing-lambda call; all other `UartButton` sites pass `onClick` positionally or by name. `TerminalButton` has two overloads; all trailing-lambda calls resolve to the 2-parameter overload (`onClick` last) and all `enabled = …` calls pass `onClick` by name. Clean. No further fixes needed.
+- **NOT verified:** no JDK exists here (no Java at all) — no compile or test run was possible, and none was attempted. The repair is hand-checked only. AndroidForge is the proof: the parent re-triggers the build from the new ZIP link.
+- **ZIP:** repackaged — SHA256 `a823ba885a99ccf0a75203577bbd637eb04f189be7e99d43a6aacdca7a650a53`, 605,522 bytes, 184 entries; unzipped tree byte-identical to the working tree (excluding `.gradle/`); fixed lines confirmed inside the ZIP (§12).
+- **Branch commit:** repair commit to `muse/ghosttap-zero-config` — pending (recorded here once pushed).

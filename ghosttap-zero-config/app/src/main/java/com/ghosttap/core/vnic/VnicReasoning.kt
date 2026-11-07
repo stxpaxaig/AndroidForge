@@ -157,7 +157,7 @@ data class VnicLlmConfig(
     val configured: Boolean get() = !apiKey.isNullOrBlank()
 
     /** The endpoint actually called: the configured one, or OpenAI when blank/unset. */
-    val effectiveEndpoint: String get() = endpoint?.trim().ifBlank { DEFAULT_ENDPOINT } ?: DEFAULT_ENDPOINT
+    val effectiveEndpoint: String get() = endpoint?.trim()?.ifBlank { DEFAULT_ENDPOINT } ?: DEFAULT_ENDPOINT
 }
 
 /**

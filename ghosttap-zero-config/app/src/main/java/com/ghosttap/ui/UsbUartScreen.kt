@@ -196,10 +196,10 @@ fun UsbUartScreen(
                     // is the user's decision — remember it so
                     // re-entering this screen never auto-connects this
                     // board again.
-                    UartButton("DISCONNECT") {
+                    UartButton("DISCONNECT", onClick = {
                         viewModel.selectedDevice?.vidPidString()?.let { intelVm?.noteManualDisconnect(it) }
                         viewModel.disconnect()
-                    }
+                    })
                 }
             }
         }
